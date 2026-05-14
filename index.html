@@ -463,7 +463,7 @@ function doMove(from, to, promoPiece) {
   render(); updateStatus();
   
   if (!game.game_over() && game.turn() !== userColor) {
-    setTimeout(makeBotMove, 1000); // Bot delay
+    setTimeout(makeBotMove, 500); // Bot delay
   }
 }
 
@@ -662,7 +662,7 @@ function resetGame() {
   render();
   
   if (userColor === 'b') {
-    setTimeout(makeBotMove, 5000);
+    setTimeout(makeBotMove, 500);
   }
 }
 
