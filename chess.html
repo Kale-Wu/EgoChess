@@ -37,6 +37,8 @@
   .square.last-from  { box-shadow:inset 0 0 0 4px rgba(201,168,76,.45); }
   .square.last-to    { box-shadow:inset 0 0 0 4px rgba(201,168,76,.7); }
   .square.in-check   { background:rgba(210,40,40,.5) !important; }
+  .square.premove-from { box-shadow:inset 0 0 0 4px rgba(220,40,40,.45); }
+  .square.premove-to   { background:rgba(220,40,40,.55) !important; }
   .square.legal-move::after {
     content:''; position:absolute; top:50%; left:50%;
     transform:translate(-50%,-50%); width:26px; height:26px;
@@ -59,6 +61,16 @@
 
   #drag-ghost { position:fixed; pointer-events:none; z-index:9999; display:none; transform:translate(-50%,-50%); width:72px; height:72px; }
   #drag-ghost img { width:100%; height:100%; }
+
+  #promo-popup {
+    display: none; position: fixed; top: 50%; left: 50%;
+    transform: translate(-50%,-50%); background: #24233a;
+    border: 2px solid var(--accent); padding: 10px;
+    z-index: 10000; border-radius: 8px; gap: 10px;
+  }
+  #promo-popup img { width: 68px; height: 68px; cursor: pointer; transition: transform 0.2s; }
+  #promo-popup img:hover { transform: scale(1.1); }
+  #promo-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 9999; }
 
   .panel { width:210px; display:flex; flex-direction:column; gap:1.2rem; padding-top:4px; }
   .box { background:#24233a; border:1px solid #3a3050; border-radius:8px; padding:1rem 1.2rem; }
@@ -112,6 +124,8 @@
   </div>
 </div>
 
+<div id="promo-overlay"></div>
+<div id="promo-popup"></div>
 <div id="drag-ghost"><img id="ghost-img" src="" alt=""/></div>
 
 <script>
@@ -125,9 +139,11 @@ var game     = new Chess();
 var selected = null;
 var legal    = [];
 var lastMove = null;
+var premoves = [];
 var dragging = false;
 var dragFrom = null;
 var userColor = 'w';
+var pendingPromo = null;
 var dragGhost   = document.getElementById('drag-ghost');
 var ghostImg    = document.getElementById('ghost-img');
 var FILES = 'abcdefgh';
@@ -166,8 +182,65 @@ function buildBoard() {
       sq.className = 'square ' + ((file + rank) % 2 === 0 ? 'dark' : 'light');
       sq.dataset.sq = name;
       sq.addEventListener('click', onSquareClick);
+      sq.addEventListener('contextmenu', function(e) {
+        e.preventDefault();
+        if (premoves.length > 0) {
+          premoves = [];
+          render();
+        }
+      });
       board.appendChild(sq);
     }
+  }
+}
+
+// ── PROMOTION ─────────────────────────────────────────────────────────────────
+function isPromotion(fromSq, toSq) {
+  var p = game.get(fromSq);
+  if (!p) {
+    p = getSimulatedBoard()[fromSq];
+  }
+  if (!p || p.type !== 'p') return false;
+  var targetRank = toSq[1];
+  if (p.color === 'w' && targetRank === '8') return true;
+  if (p.color === 'b' && targetRank === '1') return true;
+  return false;
+}
+
+function showPromoPopup(from, to, isPremove) {
+  pendingPromo = { from: from, to: to, isPremove: isPremove };
+  var popup = document.getElementById('promo-popup');
+  var overlay = document.getElementById('promo-overlay');
+  popup.innerHTML = '';
+  
+  var pieces = ['q', 'r', 'n', 'b'];
+  pieces.forEach(function(p) {
+    var img = document.createElement('img');
+    img.src = pieceUrl(userColor + p.toUpperCase());
+    img.onclick = function() {
+      overlay.style.display = 'none';
+      popup.style.display = 'none';
+      handlePromoSelection(p);
+    };
+    popup.appendChild(img);
+  });
+  
+  overlay.style.display = 'block';
+  popup.style.display = 'flex';
+}
+
+function handlePromoSelection(promoPiece) {
+  if (!pendingPromo) return;
+  var m = pendingPromo;
+  pendingPromo = null;
+  
+  if (m.isPremove) {
+    premoves.push({ from: m.from, to: m.to, promotion: promoPiece });
+    selected = null; dragFrom = null; render();
+    checkNextPremove();
+  } else {
+    doMove(m.from, m.to, promoPiece);
+    dragFrom = null; selected = null;
   }
 }
 
@@ -181,12 +254,30 @@ function findKingSquare(color) {
   return null;
 }
 
+function getSimulatedBoard() {
+  var boardMap = {};
+  for (var r = 0; r < 8; r++) {
+    for (var f = 0; f < 8; f++) {
+      var p = game.board()[r][f];
+      if (p) boardMap[FILES[f] + (8 - r)] = p;
+    }
+  }
+  premoves.forEach(function(pm) {
+    if (boardMap[pm.from]) {
+      boardMap[pm.to] = boardMap[pm.from];
+      delete boardMap[pm.from];
+    }
+  });
+  return boardMap;
+}
+
 function render() {
   var checkSq = game.in_check() ? findKingSquare(game.turn()) : null;
+  var simBoard = getSimulatedBoard();
 
   document.querySelectorAll('.square').forEach(function(el) {
     var name  = el.dataset.sq;
-    var piece = game.get(name);
+    var piece = simBoard[name];
 
     var old = el.querySelector('.piece-wrap');
     if (old) el.removeChild(old);
@@ -205,13 +296,17 @@ function render() {
       el.appendChild(wrap);
     }
 
-    el.classList.remove('selected','last-from','last-to','in-check','legal-move','legal-capture');
+    el.classList.remove('selected','last-from','last-to','in-check','legal-move','legal-capture','premove-from','premove-to');
     if (name === selected)                  el.classList.add('selected');
     if (lastMove && name === lastMove.from) el.classList.add('last-from');
     if (lastMove && name === lastMove.to)   el.classList.add('last-to');
+    premoves.forEach(function(pm) {
+      if (name === pm.from) el.classList.add('premove-from');
+      if (name === pm.to)   el.classList.add('premove-to');
+    });
     if (name === checkSq)                   el.classList.add('in-check');
     legal.forEach(function(m) {
-      if (m.to === name) el.classList.add(game.get(name) ? 'legal-capture' : 'legal-move');
+      if (m.to === name) el.classList.add(simBoard[name] ? 'legal-capture' : 'legal-move');
     });
   });
 }
@@ -219,16 +314,43 @@ function render() {
 // ── CLICK-TO-MOVE (toggle) ────────────────────────────────────────────────────
 function onSquareClick(e) {
   if (dragging) return;
-  if (game.game_over() || game.turn() !== userColor) return;
+  if (game.game_over()) return;
   var name  = e.currentTarget.dataset.sq;
+  var isOurTurn = game.turn() === userColor;
+  var simBoard = getSimulatedBoard();
+  var simPiece = simBoard[name];
   var piece = game.get(name);
+
+  if (!isOurTurn) {
+    if (selected === name) { selected = null; legal = []; render(); return; }
+    if (selected) {
+      if (isPromotion(selected, name)) {
+        showPromoPopup(selected, name, true);
+      } else {
+        premoves.push({ from: selected, to: name });
+        selected = null; legal = []; render(); 
+      }
+      return;
+    }
+    if (simPiece && simPiece.color === userColor) {
+      selected = name; legal = []; render(); return;
+    }
+    return;
+  }
 
   // Toggle off if already selected
   if (selected === name) { selected = null; legal = []; render(); return; }
 
   if (selected) {
     var move = legal.find(function(m) { return m.to === name; });
-    if (move) { doMove(selected, name); return; }
+    if (move) { 
+      if (isPromotion(selected, name)) {
+        showPromoPopup(selected, name, false);
+      } else {
+        doMove(selected, name); 
+      }
+      return; 
+    }
     if (piece && piece.color === userColor) {
       selected = name;
       legal = game.moves({ square: name, verbose: true });
@@ -246,19 +368,35 @@ function onSquareClick(e) {
 
 // ── DRAG AND DROP ─────────────────────────────────────────────────────────────
 function onPieceMouseDown(e) {
-  if (game.game_over() || game.turn() !== userColor) return;
+  if (game.game_over()) return;
   var sq    = e.currentTarget.dataset.sq;
+  var simBoard = getSimulatedBoard();
+  var simPiece = simBoard[sq];
   var piece = game.get(sq);
-  if (!piece || piece.color !== userColor) return;
+  
+  if (e.button === 2) {
+    e.preventDefault();
+    if (premoves.length > 0) { premoves = []; render(); }
+    return;
+  }
+
+  // Use piece on real board for turns, or simulated piece if premoving
+  var isOurTurn = game.turn() === userColor;
+  if (isOurTurn) {
+    if (!piece || piece.color !== userColor) return;
+  } else {
+    if (!simPiece || simPiece.color !== userColor) return;
+  }
+  
   e.preventDefault();
 
   dragging = true;
   dragFrom = sq;
   selected = sq;
-  legal = game.moves({ square: sq, verbose: true });
+  legal = isOurTurn ? game.moves({ square: sq, verbose: true }) : [];
   render();
 
-  var key = piece.color + piece.type.toUpperCase();
+  var key = (isOurTurn ? piece.color + piece.type.toUpperCase() : simPiece.color + simPiece.type.toUpperCase());
   ghostImg.src = pieceUrl(key);
   dragGhost.style.display = 'block';
   positionGhost(e.clientX, e.clientY);
@@ -292,8 +430,25 @@ function onMouseUp(e) {
   if (target) { var sqEl = target.closest('.square'); if (sqEl) targetSq = sqEl.dataset.sq; }
 
   if (targetSq && targetSq !== dragFrom) {
-    var move = legal.find(function(m) { return m.to === targetSq; });
-    if (move) { doMove(dragFrom, targetSq); dragFrom = null; return; }
+    if (game.turn() === userColor) {
+      var move = legal.find(function(m) { return m.to === targetSq; });
+      if (move) { 
+        if (isPromotion(dragFrom, targetSq)) {
+          showPromoPopup(dragFrom, targetSq, false);
+        } else {
+          doMove(dragFrom, targetSq); dragFrom = null; 
+        }
+        return; 
+      }
+    } else {
+      if (isPromotion(dragFrom, targetSq)) {
+        showPromoPopup(dragFrom, targetSq, true);
+      } else {
+        premoves.push({ from: dragFrom, to: targetSq });
+        selected = null; dragFrom = null; render(); 
+      }
+      return;
+    }
   }
 
   // Invalid drop — keep selection
@@ -301,14 +456,37 @@ function onMouseUp(e) {
 }
 
 // ── MOVE ──────────────────────────────────────────────────────────────────────
-function doMove(from, to) {
-  game.move({ from: from, to: to, promotion: 'q' });
+function doMove(from, to, promoPiece) {
+  game.move({ from: from, to: to, promotion: promoPiece || 'q' });
   lastMove = { from: from, to: to };
   selected = null; legal = [];
   render(); updateStatus();
   
   if (!game.game_over() && game.turn() !== userColor) {
-    setTimeout(makeBotMove, 400);
+    setTimeout(makeBotMove, 1000); // Bot delay
+  }
+}
+
+function checkNextPremove() {
+  if (game.game_over() || game.turn() !== userColor || premoves.length === 0) return;
+  
+  var pMove = premoves[0];
+  var validMoves = game.moves({ verbose: true });
+  var isValid = validMoves.find(function(m) { 
+    return m.from === pMove.from && m.to === pMove.to && (!m.promotion || m.promotion === pMove.promotion || pMove.promotion); 
+  });
+  
+  if (isValid) {
+    premoves.shift();
+    setTimeout(function() {
+      if (!game.game_over() && game.turn() === userColor) {
+         doMove(pMove.from, pMove.to, pMove.promotion);
+      }
+    }, 50);
+  } else {
+    // If one premove becomes illegal, the whole chain is broken
+    premoves = [];
+    render();
   }
 }
 
@@ -323,6 +501,8 @@ function makeBotMove() {
   lastMove = { from: move.from, to: move.to };
   render();
   updateStatus();
+
+  checkNextPremove();
 }
 
 // ── STATUS ────────────────────────────────────────────────────────────────────
@@ -366,7 +546,7 @@ function resetGame() {
   game.reset();
   buildBoard();
   selected = null; legal = []; lastMove = null;
-  dragFrom = null; dragging = false;
+  dragFrom = null; dragging = false; premoves = [];
   document.getElementById('turn-dot').className = '';
   document.getElementById('turn-text').textContent = 'White to move';
   document.getElementById('status').textContent = 'Game in progress';
@@ -374,7 +554,7 @@ function resetGame() {
   render();
   
   if (userColor === 'b') {
-    setTimeout(makeBotMove, 400);
+    setTimeout(makeBotMove, 5000);
   }
 }
 
