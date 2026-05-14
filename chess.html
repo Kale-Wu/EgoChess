@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Chess</title>
+<title>Ego Chess</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600&family=Lato:wght@300;400&display=swap" rel="stylesheet">
 <style>
@@ -96,8 +96,8 @@
 </style>
 </head>
 <body>
-<h1>Chess</h1>
-<p class="subtitle">Two Player</p>
+<h1>Ego Chess</h1>
+<p class="subtitle">Just try to lose >:)</p>
 
 <div class="layout">
   <div class="board-col">
@@ -490,19 +490,127 @@ function checkNextPremove() {
   }
 }
 
-function makeBotMove() {
-  if (game.game_over()) return;
-  var possibleMoves = game.moves({ verbose: true });
-  if (possibleMoves.length === 0) return;
-  var randomIdx = Math.floor(Math.random() * possibleMoves.length);
-  var move = possibleMoves[randomIdx];
+// ── ANTI-CHESS MINIMAX AI (WEB WORKER) ────────────────────────────────────────
+
+var aiWorkerCode = `
+importScripts('https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js');
+
+function evaluateAntiChess(g, botColor) {
+  if (g.in_checkmate()) {
+    if (g.turn() === botColor) return 100000;
+    else return -100000;
+  }
+  if (g.in_draw() || g.in_stalemate() || g.in_threefold_repetition()) {
+    return -50;
+  }
+
+  var score = 0;
+  var pieceValues = { 'p': 10, 'n': 30, 'b': 30, 'r': 50, 'q': 90, 'k': 900 };
+  var b = g.board();
+  
+  for (var r = 0; r < 8; r++) {
+    for (var c = 0; c < 8; c++) {
+      var p = b[r][c];
+      if (p) {
+        var val = pieceValues[p.type];
+        if (p.color === botColor) {
+          score -= val;
+        } else {
+          score += val;
+        }
+      }
+    }
+  }
+  return score;
+}
+
+function minimaxAntiChess(g, depth, alpha, beta, isMaximizingPlayer, botColor) {
+  if (depth === 0 || g.game_over()) {
+    return evaluateAntiChess(g, botColor);
+  }
+
+  var moves = g.moves({ verbose: true });
+  
+  if (isMaximizingPlayer) {
+    var bestVal = -Infinity;
+    for (var i = 0; i < moves.length; i++) {
+      g.move(moves[i].san);
+      var val = minimaxAntiChess(g, depth - 1, alpha, beta, false, botColor);
+      g.undo();
+      bestVal = Math.max(bestVal, val);
+      alpha = Math.max(alpha, bestVal);
+      if (beta <= alpha) break;
+    }
+    return bestVal;
+  } else {
+    var bestVal = Infinity;
+    for (var i = 0; i < moves.length; i++) {
+      g.move(moves[i].san);
+      var val = minimaxAntiChess(g, depth - 1, alpha, beta, true, botColor);
+      g.undo();
+      bestVal = Math.min(bestVal, val);
+      beta = Math.min(beta, bestVal);
+      if (beta <= alpha) break;
+    }
+    return bestVal;
+  }
+}
+
+function getBestAntiChessMove(fen, depth) {
+  var g = new Chess(fen);
+  var botColor = g.turn();
+  var moves = g.moves({ verbose: true });
+  if (moves.length === 0) return null;
+
+  var bestMove = null;
+  var bestVal = -Infinity;
+
+  moves.sort(function(a, b) {
+    var scoreA = a.captured ? -1 : 0;
+    var scoreB = b.captured ? -1 : 0;
+    return scoreA - scoreB;
+  });
+
+  for (var i = 0; i < moves.length; i++) {
+    g.move(moves[i].san);
+    var val = minimaxAntiChess(g, depth - 1, -Infinity, Infinity, false, botColor);
+    g.undo();
+    
+    val += Math.random() * 0.1;
+    
+    if (val > bestVal) {
+      bestVal = val;
+      bestMove = moves[i];
+    }
+  }
+  return bestMove;
+}
+
+self.onmessage = function(e) {
+  var fen = e.data.fen;
+  var depth = e.data.depth;
+  var bestMove = getBestAntiChessMove(fen, depth);
+  self.postMessage(bestMove);
+};
+`;
+
+var aiBlob = new Blob([aiWorkerCode], { type: 'application/javascript' });
+var aiWorker = new Worker(URL.createObjectURL(aiBlob));
+
+aiWorker.onmessage = function(e) {
+  var move = e.data;
+  if (!move) return;
   
   game.move(move.san);
   lastMove = { from: move.from, to: move.to };
   render();
   updateStatus();
-
   checkNextPremove();
+};
+
+function makeBotMove() {
+  if (game.game_over()) return;
+  aiWorker.postMessage({ fen: game.fen(), depth: 3 });
 }
 
 // ── STATUS ────────────────────────────────────────────────────────────────────
